@@ -24,23 +24,26 @@ export default function BloodBankPage() {
 
   const [incomingRequests, setIncomingRequests] = useState<any[]>([]);
   const [respondingId, setRespondingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
+      setError(null);
       const banks = await api.getBloodBanks();
-      setBloodBanks(banks);
-      const activeBank = selectedBank || banks[0];
+      setBloodBanks(banks || []);
+      const activeBank = selectedBank || (banks && banks.length > 0 ? banks[0] : null);
       if (activeBank) {
         setSelectedBank(activeBank);
         const [inv, reqs] = await Promise.all([
-          api.getBankInventory(activeBank.id),
+          api.getBankInventory(activeBank.id).catch(() => []),
           api.getBankIncomingRequests(activeBank.id).catch(() => [])
         ]);
-        setInventory(inv);
-        setIncomingRequests(reqs);
+        setInventory(Array.isArray(inv) ? inv : []);
+        setIncomingRequests(Array.isArray(reqs) ? reqs : []);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error('Error loading blood bank data:', err);
+      setError(err?.message || 'Failed to load blood banks');
     } finally {
       setLoading(false);
     }
@@ -51,23 +54,27 @@ export default function BloodBankPage() {
     const interval = setInterval(() => {
       if (selectedBank) {
         api.getBankIncomingRequests(selectedBank.id)
-          .then(setIncomingRequests)
+          .then((reqs) => {
+            if (Array.isArray(reqs)) setIncomingRequests(reqs);
+          })
           .catch(() => {});
       }
     }, 4000);
     return () => clearInterval(interval);
-  }, [selectedBank]);
+  }, [selectedBank?.id]);
 
   const handleBankChange = async (bank: Organization) => {
     setSelectedBank(bank);
     setLoading(true);
     try {
       const [inv, reqs] = await Promise.all([
-        api.getBankInventory(bank.id),
+        api.getBankInventory(bank.id).catch(() => []),
         api.getBankIncomingRequests(bank.id).catch(() => [])
       ]);
-      setInventory(inv);
-      setIncomingRequests(reqs);
+      setInventory(Array.isArray(inv) ? inv : []);
+      setIncomingRequests(Array.isArray(reqs) ? reqs : []);
+    } catch (err: any) {
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -79,7 +86,7 @@ export default function BloodBankPage() {
     try {
       await api.respondBloodBankRequest(selectedBank.id, requestId, 'accept', units);
       const reqs = await api.getBankIncomingRequests(selectedBank.id);
-      setIncomingRequests(reqs);
+      if (Array.isArray(reqs)) setIncomingRequests(reqs);
       alert(`✅ Blood supply accepted! The hospital command center has been notified and will coordinate collection/dispatch.`);
     } catch (err: any) {
       alert(`Failed to accept request: ${err.message}`);
@@ -95,7 +102,7 @@ export default function BloodBankPage() {
       setIsEditModalOpen(false);
       if (selectedBank) {
         const inv = await api.getBankInventory(selectedBank.id);
-        setInventory(inv);
+        if (Array.isArray(inv)) setInventory(inv);
       }
       alert('Inventory stock and freshness status updated!');
     } catch (err: any) {
@@ -128,7 +135,7 @@ export default function BloodBankPage() {
         <div className="flex items-center space-x-2 text-xs">
           <span className="font-semibold text-slate-500">Active Facility:</span>
           <select
-            value={selectedBank?.id}
+            value={selectedBank?.id || ''}
             onChange={(e) => {
               const b = bloodBanks.find(bk => bk.id === e.target.value);
               if (b) handleBankChange(b);
@@ -225,13 +232,13 @@ export default function BloodBankPage() {
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-2">
-                      <StatusBadge status={req.urgency} size="sm" />
+                      <StatusBadge status={req.urgency || 'P0'} size="sm" />
                       <span className="text-xs font-mono font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
-                        {req.patient_case_ref}
+                        {req.patient_case_ref || 'EMERGENCY'}
                       </span>
                     </div>
                     <span className="text-xs font-bold text-blood-700 bg-rose-50 px-2.5 py-0.5 rounded-full">
-                      ~{req.distance_km} km away
+                      ~{typeof req.distance_km === 'number' ? req.distance_km.toFixed(1) : (req.distance_km || '2.0')} km away
                     </span>
                   </div>
 
@@ -239,16 +246,16 @@ export default function BloodBankPage() {
                     <div className="flex items-baseline space-x-2">
                       <span className="text-2xl font-black text-slate-900">{req.blood_group}</span>
                       <span className="text-xs font-bold uppercase text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
-                        {req.component}
+                        {(req.component || 'prbc').toUpperCase()}
                       </span>
                       <span className="text-xs font-semibold text-slate-500">
-                        ({req.quantity_required} Units Needed)
+                        ({req.quantity_required ?? 1} Units Needed)
                       </span>
                     </div>
-                    <h3 className="text-sm font-bold text-slate-900 mt-1">{req.hospital_name}</h3>
-                    <p className="text-xs text-slate-500">{req.hospital_address}</p>
+                    <h3 className="text-sm font-bold text-slate-900 mt-1">{req.hospital_name || 'Hospital Trauma Center'}</h3>
+                    <p className="text-xs text-slate-500">{req.hospital_address || 'Raipur'}</p>
                     <p className="text-xs font-semibold text-slate-700 mt-1">
-                      📍 Destination: <span className="text-blood-700">{req.destination_dept}</span>
+                      📍 Destination: <span className="text-blood-700">{req.destination_dept || 'Emergency OT'}</span>
                     </p>
                   </div>
 
@@ -319,42 +326,59 @@ export default function BloodBankPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {inventory.map((item) => (
-                <tr key={item.id} className="hover:bg-slate-50/60 transition-colors">
-                  <td className="py-4 px-6">
-                    <span className="text-base font-black text-blood-700">{item.blood_group}</span>
-                  </td>
-                  <td className="py-4 px-6 font-semibold uppercase text-slate-700">
-                    {item.component.replace('_', ' ')}
-                  </td>
-                  <td className="py-4 px-6 font-bold text-slate-900">
-                    {item.units_available} Units
-                  </td>
-                  <td className="py-4 px-6 text-slate-500 font-medium">
-                    {item.units_reserved} Units
-                  </td>
-                  <td className="py-4 px-6">
-                    <StatusBadge status={item.status} size="sm" />
-                  </td>
-                  <td className="py-4 px-6 text-[11px] text-slate-500">
-                    {new Date(item.last_source_update).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </td>
-                  <td className="py-4 px-6 text-right">
-                    <button
-                      onClick={() => {
-                        setEditItem(item);
-                        setNewUnits(item.units_available);
-                        setNewStatus(item.status);
-                        setIsEditModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-blood-700 text-slate-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>Adjust</span>
-                    </button>
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-slate-500 text-xs">
+                    <RefreshCw className="w-5 h-5 animate-spin mx-auto text-blood-600 mb-2" />
+                    Loading inventory stock...
                   </td>
                 </tr>
-              ))}
+              ) : inventory.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-slate-500 text-xs">
+                    No inventory records found for this facility. Click "Refresh Stock" or select another blood bank.
+                  </td>
+                </tr>
+              ) : (
+                inventory.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50/60 transition-colors">
+                    <td className="py-4 px-6">
+                      <span className="text-base font-black text-blood-700">{item.blood_group}</span>
+                    </td>
+                    <td className="py-4 px-6 font-semibold uppercase text-slate-700">
+                      {(item.component || '').replace('_', ' ')}
+                    </td>
+                    <td className="py-4 px-6 font-bold text-slate-900">
+                      {item.units_available ?? 0} Units
+                    </td>
+                    <td className="py-4 px-6 text-slate-500 font-medium">
+                      {item.units_reserved ?? 0} Units
+                    </td>
+                    <td className="py-4 px-6">
+                      <StatusBadge status={item.status || 'CONFIRMED_AVAILABLE'} size="sm" />
+                    </td>
+                    <td className="py-4 px-6 text-[11px] text-slate-500">
+                      {item.last_source_update
+                        ? new Date(item.last_source_update).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        : 'Recent'}
+                    </td>
+                    <td className="py-4 px-6 text-right">
+                      <button
+                        onClick={() => {
+                          setEditItem(item);
+                          setNewUnits(item.units_available);
+                          setNewStatus(item.status);
+                          setIsEditModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-blood-700 text-slate-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center space-x-1"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Adjust</span>
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
